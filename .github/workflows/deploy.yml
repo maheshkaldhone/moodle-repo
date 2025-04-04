@@ -1,9 +1,6 @@
 name: Moodle Plugin Workflow
 
 on:
-#  push:
-#    branches:
-#      - main
   workflow_dispatch:
     inputs:
       branch:
@@ -16,7 +13,7 @@ on:
           - 'dev'
 
 env:
-  MOODLE_ROOT: /var/www/html/moodle  
+  MOODLE_ROOT: /var/www/html/moodle
 
 jobs:
   detect-changes:
@@ -24,20 +21,35 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       directories: ${{ steps.process-changes.outputs.dirs }}
-    steps:          
+    steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.branch }}
-          fetch-depth: 0 
+          fetch-depth: 0
+
+      - name: Restore Last Deployed SHA
+        id: restore-sha
+        uses: actions/cache@v3
+        with:
+          path: last_deployed_sha.txt
+          key: last-deployed-sha-${{ github.event.inputs.branch }}
+
+      - name: Set Last Deployed SHA Variable
+        id: set-sha
+        run: |
+          if [ -f last_deployed_sha.txt ]; then
+            LAST_DEPLOYED_SHA=$(cat last_deployed_sha.txt)
+            echo "last_deployed_sha=$LAST_DEPLOYED_SHA" >> $GITHUB_OUTPUT
+          else
+            echo "No last deployed SHA found. Assuming initial deployment."
+            echo "last_deployed_sha=" >> $GITHUB_OUTPUT
+          fi
 
       - name: Find Plugin Directories
         id: find-plugins
         run: |
-          echo "Scanning for plugin directories containing version.php under plugins/"
-          # Find directories containing version.php under plugins/
           plugin_dirs=$(find plugins -type f -name version.php -exec dirname {} \; | sort -u)
-          echo "Found plugin directories: $plugin_dirs"
           echo "plugin_dirs<<EOF" >> $GITHUB_OUTPUT
           echo "$plugin_dirs" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
@@ -45,42 +57,32 @@ jobs:
       - name: Process Changes
         id: process-changes
         run: |
-          echo "Processing changes in the latest commit"
-          echo "Getting base ref for branch: ${{ github.event.inputs.branch }}"
-          DEPLOY_BRANCH=${{ github.event.inputs.branch }}
-          base_ref=$(git merge-base origin/$DEPLOY_BRANCH HEAD)
-          echo "Computed base ref: $base_ref"
-
-          # Get the list of changed files since base_ref
-          changed_files=$(git diff --name-only "$base_ref" HEAD)
-          echo "Changed files detected: $changed_files"
-          
-          # Initialize an associative array to track changed directories
+          LAST_DEPLOYED_SHA="${{ steps.set-sha.outputs.last_deployed_sha }}"
           declare -A plugin_map
-          
-          # Loop through each plugin directory
-          echo "Checking plugin directories for changes"
-          for dir in $(echo "${{ steps.find-plugins.outputs.plugin_dirs }}"); do
-            # Check if any changed file is within this directory
-            if echo "$changed_files" | grep -q "^$dir/"; then
-              echo "Change detected in directory: $dir"
-              plugin_map["$dir"]=1
-            fi
-          done
-          
-          # Convert the changed directories to a sorted list
-          dir_list=$(printf "%s\n" "${!plugin_map[@]}" | sort -u)
-          echo "List of directories with changes: $dir_list"
-          
-          # If no changes, output an empty JSON array; otherwise, format as JSON
+          dir_list=""
+
+          if [[ -z "$LAST_DEPLOYED_SHA" ]]; then
+            echo "Initial deployment: including all plugin directories"
+            dir_list="${{ steps.find-plugins.outputs.plugin_dirs }}"
+          else
+            echo "Checking changes since $LAST_DEPLOYED_SHA"
+            changed_files=$(git diff --name-only "$LAST_DEPLOYED_SHA" HEAD)
+            echo "Changed files: $changed_files"
+
+            for dir in $(echo "${{ steps.find-plugins.outputs.plugin_dirs }}"); do
+              if echo "$changed_files" | grep -q "^$dir/"; then
+                plugin_map["$dir"]=1
+              fi
+            done
+            dir_list=$(printf "%s\n" "${!plugin_map[@]}" | sort -u)
+          fi
+
           if [[ -z "$dir_list" ]]; then
             json_dirs="[]"
-            echo "No changes detected in plugin directories"
           else
             json_dirs=$(jq -nc '$ARGS.positional' --args ${dir_list})
-            echo "Formatted changed directories as JSON: $json_dirs"
           fi
-          
+
           echo "dirs=$json_dirs" >> $GITHUB_OUTPUT
 
   package-plugins:
@@ -98,19 +100,11 @@ jobs:
       - name: Create Plugin Bundle
         id: package
         run: |
-          echo "Creating package for plugin: ${{ matrix.dir }}"
-          # Compute a safe name by replacing '/' with '-'
           safe_name=$(echo "${{ matrix.dir }}" | tr '/' '-')
           zip_file="${safe_name}-$(date +%Y%m%d-%H%M%S).zip"
-          echo "Generated package name: $zip_file"
-          
-          # Change into the parent directory and zip the plugin folder
           cd "$(dirname "${{ matrix.dir }}")"
-          echo "Zipping directory: $(basename "${{ matrix.dir }}")"
           zip -qr "$zip_file" "$(basename "${{ matrix.dir }}")"
-          
           zip_path="$(pwd)/$zip_file"
-          echo "Created package at: $zip_path"
           echo "zip=$zip_path" >> $GITHUB_OUTPUT
           echo "name=$safe_name" >> $GITHUB_OUTPUT
 
@@ -125,7 +119,7 @@ jobs:
     name: Deploy to Server
     needs: [detect-changes, package-plugins]
     if: ${{ needs.detect-changes.outputs.directories != '[]' }}
-    runs-on: ${{ github.event.inputs.branch == 'main' && fromJson('["self-hosted", "priavte2", "prod"]') || github.event.inputs.branch == 'dev' && fromJson('["self-hosted", "private1", "dev"]') }}
+    runs-on: ${{ github.event.inputs.branch == 'main' && fromJson('["self-hosted", "prod"]') || github.event.inputs.branch == 'dev' && fromJson('["self-hosted", "dev"]') }}
     strategy:
       matrix:
         dir: ${{ fromJson(needs.detect-changes.outputs.directories) }}
@@ -133,7 +127,6 @@ jobs:
       - name: Compute Safe Name and Target Path
         id: compute-safe
         run: |
-          echo "Computing safe name and target path for: ${{ matrix.dir }}"
           safe_name=$(echo "${{ matrix.dir }}" | tr '/' '-')
           deploy_subdir=$(echo "${{ matrix.dir }}" | sed 's|^plugins/||')
           case "${{ matrix.dir }}" in
@@ -141,8 +134,6 @@ jobs:
             plugins/customfield/*) target_path="customfield/field/$(basename "${{ matrix.dir }}")" ;;
             *) target_path="$deploy_subdir" ;;
           esac
-          echo "Safe name: $safe_name"
-          echo "Target path: $target_path"
           echo "safe_name=$safe_name" >> $GITHUB_OUTPUT
           echo "target_path=$target_path" >> $GITHUB_OUTPUT
 
@@ -154,56 +145,49 @@ jobs:
 
       - name: Backup Existing Plugin
         run: |
-          set -eo pipefail
-          trap 'echo "Backup failed at line $LINENO" && exit 1' ERR
           target_dir="${{ env.MOODLE_ROOT }}/${{ steps.compute-safe.outputs.target_path }}"
           backup_dir="/tmp/moodle-backups/${{ github.run_id }}/$(date +%Y%m%d)/${{ steps.compute-safe.outputs.target_path }}"
-          echo "Checking if target directory exists: $target_dir"
           if [ -d "$target_dir" ]; then
-            echo "Target directory exists, proceeding with backup"
             sudo mkdir -p "$backup_dir"
-            echo "Created backup directory: $backup_dir"
             backup_file="$backup_dir/$(basename "$target_dir")-$(date +%H%M%S).tgz"
-            echo "Creating backup file: $backup_file"
             sudo tar -czf "$backup_file" -C "$(dirname "$target_dir")" "$(basename "$target_dir")"
-            echo "Backup completed successfully: $backup_file"
-          else
-            echo "No existing directory found at $target_dir, skipping backup"
           fi
 
       - name: Deploy Plugin
         run: |
-          set -eo pipefail
-          trap 'echo "Deployment failed at line $LINENO" && exit 1' ERR
           target_dir="${{ env.MOODLE_ROOT }}/${{ steps.compute-safe.outputs.target_path }}"
           safe_name="${{ steps.compute-safe.outputs.safe_name }}"
-          echo "Deploying plugin to: $target_dir"
           zip_file=$(ls -t /tmp/deployment/${{ github.run_id }}/${safe_name}-*.zip | head -n 1)
-          if [ -z "$zip_file" ]; then
-            echo "Error: No ZIP file found for $safe_name"
-            exit 1
-          fi
-          echo "Found ZIP file for deployment: $zip_file"
-          echo "Removing existing directory: $target_dir"
           sudo rm -rf "$target_dir"
-          echo "Creating parent directory for deployment: $(dirname "$target_dir")"
           sudo mkdir -p "$(dirname "$target_dir")"
-          echo "Unzipping $zip_file to $(dirname "$target_dir")"
           sudo unzip -q "$zip_file" -d "$(dirname "$target_dir")"
-          echo "Setting ownership of $target_dir to www-data:www-data"
           sudo chown -R www-data:www-data "$target_dir"
-          echo "Setting directory permissions to 755"
           sudo find "$target_dir" -type d -exec chmod 755 {} \;
-          echo "Setting file permissions to 644"
           sudo find "$target_dir" -type f -exec chmod 644 {} \;
-          echo "Deployment completed successfully for $target_dir"
 
-#  upgrade-moodle:
-#    name: Run Moodle Upgrade
-#    needs: deploy-plugins
-#    if: ${{ needs.detect-changes.outputs.directories != '[]' }}
-#    runs-on: self-hosted
-#    steps:
-#      - name: Run Moodle Upgrade
-#        run: |
-#          sudo -u www-data /usr/bin/php ${{ env.MOODLE_ROOT }}/admin/cli/upgrade.php --non-interactive
+  save-sha:
+    name: Save Deployment SHA
+    needs: [deploy-plugins]
+    if: ${{ needs.detect-changes.outputs.directories != '[]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
+
+      - name: Get Current SHA
+        id: get-sha
+        run: |
+          current_sha=$(git rev-parse HEAD)
+          echo "current_sha=$current_sha" >> $GITHUB_OUTPUT
+
+      - name: Save SHA to Cache
+        uses: actions/cache@v3
+        with:
+          path: last_deployed_sha.txt
+          key: last-deployed-sha-${{ github.event.inputs.branch }}
+        env:
+          current_sha: ${{ steps.get-sha.outputs.current_sha }}
+        run: |
+          echo "$current_sha" > last_deployed_sha.txt
