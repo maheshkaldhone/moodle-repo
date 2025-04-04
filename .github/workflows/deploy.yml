@@ -191,4 +191,3 @@ jobs:
           echo "Setting file permissions to 644"
           sudo find "$target_dir" -type f -exec chmod 644 {} \;
           echo "Deployment completed successfully for $target_dir"
-          echo "Deployment completed successfully" >> $GITHUB_ENV
