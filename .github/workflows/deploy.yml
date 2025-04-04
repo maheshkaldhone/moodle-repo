@@ -180,6 +180,7 @@ jobs:
         id: get-sha
         run: |
           current_sha=$(git rev-parse HEAD)
+          echo "$current_sha" > last_deployed_sha.txt
           echo "current_sha=$current_sha" >> $GITHUB_OUTPUT
 
       - name: Save SHA to Cache
@@ -187,7 +188,3 @@ jobs:
         with:
           path: last_deployed_sha.txt
           key: last-deployed-sha-${{ github.event.inputs.branch }}
-        env:
-          current_sha: ${{ steps.get-sha.outputs.current_sha }}
-        run: |
-          echo "$current_sha" > last_deployed_sha.txt
