@@ -51,7 +51,7 @@ jobs:
           echo "Processing changes since the last successful deployment"
           if [ -z "${{ env.last_successful_commit }}" ]; then
             echo "No previous successful deployment found, processing all changes"
-            changed_files=$(git diff --name-only ${{ github.event.inputs.branch }})
+            changed_files=$(git diff --name-only $(git rev-list --max-parents=0 HEAD) HEAD)
           else
             changed_files=$(git diff --name-only ${{ env.last_successful_commit }} HEAD)
           fi
