@@ -46,15 +46,14 @@ jobs:
         id: process-changes
         run: |
           echo "Processing changes in the latest commit"
-          # Get the list of changed files in the latest commit
-          # Only fetching last commit
-          # changed_files=$(git diff --name-only HEAD^ HEAD)
-          #cecho "Changed files detected: $changed_files"
-          
-         # Get the common ancestor commit between selected branch and HEAD
-          base_ref=$(git merge-base origin/${{ github.event.inputs.branch }} HEAD)
-          changed_files=$(git diff --name-only $base_ref HEAD)
-          echo "Changed files detected since $base_ref: $changed_files"
+          echo "Getting base ref for branch: ${{ github.event.inputs.branch }}"
+          DEPLOY_BRANCH=${{ github.event.inputs.branch }}
+          base_ref=$(git merge-base origin/$DEPLOY_BRANCH HEAD)
+          echo "Computed base ref: $base_ref"
+
+          # Get the list of changed files since base_ref
+          changed_files=$(git diff --name-only "$base_ref" HEAD)
+          echo "Changed files detected: $changed_files"
           
           # Initialize an associative array to track changed directories
           declare -A plugin_map
