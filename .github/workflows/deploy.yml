@@ -3,7 +3,8 @@ name: Moodle Plugin Workflow
 on:
 #  push:
 #    branches:
-#      - dev
+#      - develop
+
   pull_request:
     branches:
      - develop
