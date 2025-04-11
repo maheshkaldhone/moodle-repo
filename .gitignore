@@ -2,3 +2,4 @@
 .github/workflows/current.yml
 .github/workflows/new.yml
 .github/workflows/ai.yml
+.github/workflows/deploy1.yml
