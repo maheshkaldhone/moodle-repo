@@ -69,6 +69,7 @@ jobs:
           fi
           
           echo "dirs=$json_dirs" >> $GITHUB_OUTPUT
+
   package-plugins:
     name: Package Changed Plugins
     needs: detect-changes
@@ -190,6 +191,7 @@ jobs:
         run: |
           echo "Disabling maintenance mode"
           sudo -u www-data /usr/bin/php ${{ env.MOODLE_ROOT }}/admin/cli/maintenance.php --disable
+
   create-release:
     name: Create GitHub Release
     needs: [detect-changes, deploy-plugins]
@@ -202,24 +204,26 @@ jobs:
           ref: ${{ github.event.inputs.branch || github.ref_name }}
           fetch-depth: 0
           
-      - name: Debug Version Extraction
+      - name: Get PR Description (if applicable)
+        id: pr-description
         run: |
-          for dir in $(echo '${{ needs.detect-changes.outputs.directories }}' | jq -r '.[]'); do
-            version_file="$dir/version.php"
-            if [ -f "$version_file" ]; then
-              echo "Content of $version_file:"
-              cat "$version_file"
-              echo "Attempting to extract version:"
-              grep -E '(\$plugin->version|\$module->version|\$version)\s*=' "$version_file" | \
-                sed -E 's/.*=\s*([0-9]+).*/\1/' | head -n 1
-            fi
-          done
-
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            pr_description=$(curl -s \
+              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}" \
+              | jq -r '.body')
+            echo "PR description fetched: $pr_description"
+          else
+            pr_description="No PR description available."
+            echo "No PR description available."
+          fi
+          echo "pr_description=$pr_description" >> $GITHUB_OUTPUT
+          
       - name: Generate Release Notes and Tags
         id: generate-release
         run: |
           echo "Generating release notes and tags for changed plugins"
-          release_notes=""
+          release_notes="${{ steps.pr-description.outputs.pr_description }}"
           tag_list=""
           for dir in $(echo '${{ needs.detect-changes.outputs.directories }}' | jq -r '.[]'); do
             echo "Processing directory: $dir"
@@ -250,7 +254,7 @@ jobs:
               echo "No commit messages found for $dir"
               commit_messages="- No commit messages found for this plugin"
             else
-              echo "Commit messages found for $dir:"
+              echo "Commit messages found for $dir:" 
               echo "$commit_messages"
             fi
             # Build release notes with plugin details and commit messages
@@ -263,6 +267,7 @@ jobs:
           echo -e "$release_notes" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
           echo "tags=$tag_list" >> $GITHUB_OUTPUT
+          
       - name: Create Tags
         run: |
           echo "Creating tags"
@@ -281,6 +286,7 @@ jobs:
               git push origin "$tag"
             fi
           done
+          
       - name: Retrieve All Packages
         uses: actions/download-artifact@v4
         with:
@@ -292,12 +298,17 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Creating GitHub release"
-          first_tag=$(echo ${{ steps.generate-release.outputs.tags }} | cut -d' ' -f1)
-          echo "Using tag for release: $first_tag"
-          release_name="Release $first_tag"
-          gh release create "$first_tag" \
-            --title "$release_name" \
-            --notes "${{ steps.generate-release.outputs.release_notes }}" \
-            /tmp/release-artifacts/${{ github.run_id }}/*.zip
-          echo "Release $release_name created successfully"
+         echo "Creating GitHub release"
+         # Get the first generated tag, or use the new tag if a duplicate was found
+         first_tag=$(echo ${{ steps.generate-release.outputs.tags }} | cut -d' ' -f1)
+         # Update to use the last generated unique tag if necessary
+         new_tag=$(git tag -l "plugins-enrol-category-v*" | sort -r | head -n 1)
+         echo "Using tag for release: $new_tag"
+         release_name="Release $new_tag"
+    
+         # Create GitHub release using the new tag
+         gh release create "$new_tag" \
+         --title "$release_name" \
+         --notes "${{ steps.generate-release.outputs.release_notes }}" \
+         /tmp/release-artifacts/${{ github.run_id }}/*.zip
+         echo "Release $release_name created successfully"
